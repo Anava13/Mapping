@@ -1,0 +1,270 @@
+% Assign Path to your Excel file here:
+
+filepath = 'C:\Users\aleja\Desktop\CleanPierisrapaestudentdataset_Fall2024.xlsx - Sheet1.csv';
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+% Read data while handling special characters
+opts = detectImportOptions(filepath);
+opts.PreserveVariableNames = true;
+data = readtable(filepath, opts);
+
+% Create figure
+fig = figure('Position', [100 100 1200 600], ...
+    'WindowStyle', 'normal', ...
+    'MenuBar', 'none', ...
+    'ToolBar', 'none', ...
+    'Name', 'Geographic Distribution', ...
+    'NumberTitle', 'off');
+
+% Create the base map
+ax = geoaxes;
+hold on
+
+% Add north arrow
+annotation('arrow', [0.95 0.95], [0.8 0.9], 'Color', 'k', 'LineWidth', 2);
+annotation('textbox', [0.935 0.75 0.03 0.03], 'String', 'N', ...
+    'EdgeColor', 'none', 'Color', 'k', ...
+    'FontSize', 12, 'HorizontalAlignment', 'center');
+
+[lat, lon] = extractLatLong(data);
+h = geoscatter(lat, lon, 50, 'filled');
+geobasemap('landcover')
+
+title(ax, 'Geographic Distribution', 'FontSize', 14, 'FontWeight', 'bold');
+
+save_button = uicontrol('Style', 'pushbutton', ...
+    'String', 'Save Figure', ...
+    'Position', [20 520 100 30], ...
+    'Callback', @saveFigure);
+
+columns = data.Properties.VariableNames;
+valid_columns = struct('display', {}, 'actual', {}, 'index', {}, 'type', {});
+
+for i = 1:length(columns)
+    try
+        current_column = columns{i};
+        values = table2array(data(:, current_column));
+        
+        % Skip empty columns
+        if isempty(values)
+            continue;
+        end
+        
+        if isnumeric(values)
+            if all(isnan(values))
+                continue;
+            end
+            col_type = 'numeric';
+        elseif iscell(values) || isstring(values)
+            unique_vals = unique(values);
+            if isempty(unique_vals)
+                continue;
+            end
+            col_type = 'categorical';
+        else
+            continue;
+        end
+        
+        tmp = struct('display', current_column, ...
+                    'actual', current_column, ...
+                    'index', i, ...
+                    'type', col_type);
+        valid_columns = [valid_columns tmp];
+    catch
+        continue;
+    end
+end
+% Create dropdowns
+dropdown = uicontrol('Style', 'popup', ...
+    'String', {valid_columns.display}, ...
+    'Position', [20 560 200 20], ...
+    'Callback', @updatePlot);
+
+continents = {'World', 'North America','United States', 'United Kingdom','South America', 'Europe', 'Africa', 'Asia', 'Oceania'};
+continent_dropdown = uicontrol('Style', 'popup', ...
+    'String', continents, ...
+    'Position', [240 560 150 20], ...
+    'Callback', @updateContinent);
+
+% Store continent boundaries
+continent_bounds = struct();
+continent_bounds.World = [-90 90 -180 180];
+continent_bounds.NorthAmerica = [15 84 -168 -52];
+continent_bounds.UnitedStates = [24 50 -125 -66.5];
+continent_bounds.SouthAmerica = [-56 12 -81 -34];
+continent_bounds.Europe = [36 71 -11 32];
+continent_bounds.UnitedKingdom = [49 59 -8 2];
+continent_bounds.Africa = [-35 37 -17 51];
+continent_bounds.Asia = [-10 77 25 180];
+continent_bounds.Oceania = [-47 -10 110 180];
+
+% Store data and handles
+fig.UserData.data = data;
+fig.UserData.scatter = h;
+fig.UserData.continent_bounds = continent_bounds;
+fig.UserData.geoaxes = ax;
+fig.UserData.valid_columns = valid_columns;
+
+% Initialize plot
+dropdown.Value = 1;
+updatePlot(dropdown, []);
+
+function updateContinent(src, ~)
+    selected_continent = src.String{src.Value};
+    fig = src.Parent;
+    ax = fig.UserData.geoaxes;
+    bounds = fig.UserData.continent_bounds;
+    field_name = strrep(selected_continent, ' ', '');
+    
+    if isfield(bounds, field_name)
+        bound = bounds.(field_name);
+        geolimits(ax, [bound(1) bound(2)], [bound(3) bound(4)]);
+    end
+end
+function updatePlot(src, ~)
+    selected_display_index = src.Value;
+    fig = src.Parent;
+    valid_columns = fig.UserData.valid_columns;
+    selected_column = valid_columns(selected_display_index).actual;
+    display_name = valid_columns(selected_display_index).display;
+    col_type = valid_columns(selected_display_index).type;
+    
+    data = fig.UserData.data;
+    ax = fig.UserData.geoaxes;
+    [lat, lon] = extractLatLong(data);
+    
+    title(ax, ['Geographic Distribution - ' display_name], 'FontSize', 14, 'FontWeight', 'bold');
+    values = table2array(data(:, selected_column));
+    
+    % Delete existing graphics
+    delete(findall(fig, 'Type', 'ColorBar'));
+    delete(findall(fig, 'Type', 'Legend'));
+    delete(findobj(ax, 'Type', 'Scatter'));
+    
+    if strcmp(col_type, 'numeric')
+        valid_values = values(~isnan(values) & ~isinf(values));
+        
+        if isempty(valid_values)
+            colors = repmat([0.7 0.7 0.7], length(values), 1);
+        else
+            max_val = max(valid_values);
+            min_val = min(valid_values);
+            cmap = jet(256);
+            colors = zeros(length(values), 3);
+            
+            valid_idx = ~isnan(values) & ~isinf(values);
+            if min_val == max_val
+                colors(valid_idx, :) = repmat(cmap(128,:), sum(valid_idx), 1);
+            else
+                normalized_values = (values(valid_idx) - min_val) / (max_val - min_val);
+                cmap_indices = max(1, min(256, round(normalized_values * 255) + 1));
+                colors(valid_idx, :) = cmap(cmap_indices, :);
+            end
+            
+            invalid_idx = isnan(values) | isinf(values);
+            colors(invalid_idx, :) = repmat([0.7 0.7 0.7], sum(invalid_idx), 1);
+            
+            geoscatter(ax, lat, lon, 50, colors, 'filled');
+            
+            colormap(ax, jet(256));
+            c = colorbar(ax);
+            ylabel(c, display_name);
+            caxis(ax, [min_val max_val]);
+        end
+    else  % categorical data
+        if iscell(values)
+            values = string(values);
+        end
+        % Standardize strings by removing all non-alphanumeric chars and spaces
+        values = lower(values);
+        normalized_values = regexprep(values, '[^a-z0-9]', '');
+        
+        unique_vals = unique(normalized_values(~ismissing(normalized_values)));
+        num_categories = length(unique_vals);
+        
+        category_colors = hsv(num_categories);
+        
+        legend_entries = cell(num_categories + any(ismissing(values)), 1);
+        legend_handles = gobjects(num_categories + any(ismissing(values)), 1);
+        
+        for i = 1:num_categories
+            cat_idx = normalized_values == unique_vals(i);
+            h = geoscatter(ax, lat(cat_idx), lon(cat_idx), 50, category_colors(i,:), 'filled');
+            % Get first occurrence of this category for display
+            original_values = table2array(data(:, selected_column));
+            first_occurrence = char(original_values(find(cat_idx, 1, 'first')));
+            legend_entries{i} = first_occurrence;
+            legend_handles(i) = h;
+        end
+        
+        if any(ismissing(values))
+            missing_idx = ismissing(values);
+            h = geoscatter(ax, lat(missing_idx), lon(missing_idx), 50, [0.7 0.7 0.7], 'filled');
+            legend_entries{end} = 'Missing';
+            legend_handles(end) = h;
+        end
+        
+        % Remove empty entries from legend
+        valid_entries = ~cellfun(@isempty, legend_entries);
+        legend(ax, legend_handles(valid_entries), legend_entries(valid_entries), 'Location', 'eastoutside');
+    end
+end
+function [lat, lon] = extractLatLong(data)
+    colNames = data.Properties.VariableNames;
+    colNamesLower = lower(colNames);
+    
+    latIdx = find(contains(colNamesLower, 'latitude'));
+    lonIdx = find(contains(colNamesLower, 'longitude'));
+    
+    if isempty(latIdx)
+        error('No latitude column found');
+    end
+    if isempty(lonIdx)
+        error('No longitude column found');
+    end
+    if length(latIdx) > 1
+        warning('Multiple latitude columns found. Using first one.');
+        latIdx = latIdx(1);
+    end
+    if length(lonIdx) > 1
+        warning('Multiple longitude columns found. Using first one.');
+        lonIdx = lonIdx(1);
+    end
+    
+    lat = table2array(data(:, latIdx));
+    lon = table2array(data(:, lonIdx));
+end
+
+function saveFigure(src, ~)
+    fig = src.Parent;
+    ax = fig.UserData.geoaxes;
+    current_title = get(get(ax, 'Title'), 'String');
+    
+    sanitized_title = regexprep(current_title, '[^\w\s]', '');
+    sanitized_title = strrep(sanitized_title, ' ', '_');
+    
+    timestamp = datestr(now, 'yyyymmdd_HHMMSS');
+    default_filename = sprintf('%s_%s.png', sanitized_title, timestamp);
+    
+    [filename, pathname] = uiputfile({'*.png', 'PNG files (*.png)'}, ...
+        'Save Figure As', default_filename);
+    
+    if isequal(filename, 0) || isequal(pathname, 0)
+        return;
+    end
+    
+    full_path = fullfile(pathname, filename);
+    
+    controls = findobj(fig, 'Type', 'uicontrol');
+    visibilities = get(controls, 'Visible');
+    set(controls, 'Visible', 'off');
+    
+    exportgraphics(fig, full_path, 'Resolution', 300);
+    
+    for i = 1:length(controls)
+        set(controls(i), 'Visible', visibilities{i});
+    end
+    
+    msgbox(sprintf('Figure saved successfully as:\n%s', full_path), 'Save Complete');
+end
